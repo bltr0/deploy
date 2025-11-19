@@ -9,6 +9,10 @@ inputs:
     required: false
     default: "docker-compose.yml"
     description: "Path to the compose file if different"
+  migration_service:
+    required: false
+    default: "api"
+    description: "Service name to run migrations on"
 runs:
   using: composite
   steps:
@@ -29,9 +33,13 @@ runs:
           git reset --hard origin/main
           
           # 3. Docker Compose Deploy
-          # (Assumes .env already exists on server)
           docker compose -f ${{ inputs.compose_file }} pull
           docker compose -f ${{ inputs.compose_file }} up -d --build --remove-orphans
           
-          # 4. Prune
+          # 4. Run Migrations (wait for containers to be healthy)
+          echo "Waiting for services to be ready..."
+          sleep 5
+          docker compose -f ${{ inputs.compose_file }} exec -T ${{ inputs.migration_service }} npx prisma migrate deploy
+          
+          # 5. Prune
           docker image prune -af
