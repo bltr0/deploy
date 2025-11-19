@@ -1,0 +1,39 @@
+name: Deploy Docker App
+description: Build image on server, migrate (optional), and restart container
+inputs:
+  host: { required: true }
+  username: { required: true }
+  key: { required: true }
+  project_dir: { required: true }
+  image_name: { required: true }
+  container_name: { required: true }
+  docker_run_flags:
+    required: true
+    description: Flags passed to docker run (ports, volumes, env-file)
+  migration_command:
+    required: false
+runs:
+  using: composite
+  steps:
+    - uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ inputs.host }}
+        username: ${{ inputs.username }}
+        key: ${{ inputs.key }}
+        script: |
+          set -e
+          cd ${{ inputs.project_dir }}
+          git fetch origin
+          git reset --hard origin/main
+          docker build -t "${{ inputs.image_name }}:latest" .
+          docker stop "${{ inputs.container_name }}" || true
+          docker rm "${{ inputs.container_name }}" || true
+          if [ -n "${{ inputs.migration_command }}" ]; then
+            docker run --rm ${{ inputs.docker_run_flags }} "${{ inputs.image_name }}:latest" ${{ inputs.migration_command }}
+          fi
+          docker run -d \
+            --name "${{ inputs.container_name }}" \
+            --restart=unless-stopped \
+            ${{ inputs.docker_run_flags }} \
+            "${{ inputs.image_name }}:latest"
+          docker image prune -af

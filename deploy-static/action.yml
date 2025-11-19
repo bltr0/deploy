@@ -1,0 +1,58 @@
+name: Deploy Static Site
+description: Build and deploy a static site via SCP + Nginx reload
+inputs:
+  host:
+    required: true
+    description: SSH host
+  username:
+    required: true
+    description: SSH username
+  key:
+    required: true
+    description: SSH private key
+  target_dir:
+    required: true
+    description: Remote directory to deploy to
+  node_version:
+    required: false
+    default: '20'
+  pnpm_version:
+    required: false
+    default: '10'
+  build_command:
+    required: false
+    default: 'pnpm build'
+  output_dir:
+    required: false
+    default: 'out'
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@v4
+    - uses: pnpm/action-setup@v4
+      with:
+        version: ${{ inputs.pnpm_version }}
+    - uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node_version }}
+        cache: pnpm
+    - run: pnpm install --frozen-lockfile
+      shell: bash
+    - run: ${{ inputs.build_command }}
+      shell: bash
+    - uses: appleboy/scp-action@v0.1.7
+      with:
+        host: ${{ inputs.host }}
+        username: ${{ inputs.username }}
+        key: ${{ inputs.key }}
+        source: "${{ inputs.output_dir }}/*"
+        target: ${{ inputs.target_dir }}
+        rm: true
+    - uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ inputs.host }}
+        username: ${{ inputs.username }}
+        key: ${{ inputs.key }}
+        script: |
+          sudo nginx -t
+          sudo systemctl reload nginx
