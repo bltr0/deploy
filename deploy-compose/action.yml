@@ -1,0 +1,37 @@
+name: Deploy Docker Compose App
+description: Build and restart services using docker compose on VPS
+inputs:
+  host: { required: true }
+  username: { required: true }
+  key: { required: true }
+  project_dir: { required: true }
+  compose_file:
+    required: false
+    default: "docker-compose.yml"
+    description: "Path to the compose file if different"
+runs:
+  using: composite
+  steps:
+    - uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ inputs.host }}
+        username: ${{ inputs.username }}
+        key: ${{ inputs.key }}
+        script: |
+          set -e
+          target_dir="${{ inputs.project_dir }}"
+          
+          # 1. Navigate to project
+          cd "$target_dir"
+          
+          # 2. Update Code
+          git fetch origin
+          git reset --hard origin/main
+          
+          # 3. Docker Compose Deploy
+          # (Assumes .env already exists on server)
+          docker compose -f ${{ inputs.compose_file }} pull
+          docker compose -f ${{ inputs.compose_file }} up -d --build --remove-orphans
+          
+          # 4. Prune
+          docker image prune -af
