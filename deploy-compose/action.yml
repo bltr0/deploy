@@ -1,18 +1,18 @@
 name: Deploy Docker Compose App
 description: Build and restart services using docker compose on VPS
 inputs:
-  host: { required: true }
-  username: { required: true }
-  key: { required: true }
-  project_dir: { required: true }
+  host: { required: true, description: "HOST address" }
+  username: { required: true, description: "HOST USER" }
+  key: { required: true, description: "HOST USER private key" }
+  project_dir: { required: true, description: "Project directory on HOST relative to USER home directory" }
   compose_file:
     required: false
     default: "docker-compose.yml"
     description: "Path to the compose file if different"
   migration_service:
     required: false
-    default: "api"
-    description: "Service name to run migrations on"
+    default: ""
+    description: "Service name to run migrations on (leave empty to skip)"
 runs:
   using: composite
   steps:
@@ -37,9 +37,13 @@ runs:
           docker compose -f ${{ inputs.compose_file }} up -d --build --remove-orphans
           
           # 4. Run Migrations (wait for containers to be healthy)
-          echo "Waiting for services to be ready..."
-          sleep 5
-          docker compose -f ${{ inputs.compose_file }} exec -T ${{ inputs.migration_service }} npx prisma migrate deploy
+          if [ -n "${{ inputs.migration_service }}" ]; then
+            echo "Waiting for services to be ready..."
+            sleep 5
+            docker compose -f ${{ inputs.compose_file }} exec -T ${{ inputs.migration_service }} npx prisma migrate deploy
+          else
+            echo "Skipping migrations (no migration_service specified)"
+          fi
           
           # 5. Prune
           docker image prune -af
