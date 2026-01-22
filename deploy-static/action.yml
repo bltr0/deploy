@@ -15,10 +15,10 @@ inputs:
     description: Remote directory to deploy to
   node_version:
     required: false
-    default: '20'
+    default: '24'
   pnpm_version:
     required: false
-    default: '10'
+    default: ''
   build_command:
     required: false
     default: 'pnpm build'
@@ -29,9 +29,26 @@ runs:
   using: composite
   steps:
     - uses: actions/checkout@v4
+    - id: detect-pnpm-version
+      shell: bash
+      run: |
+        VERSION="${{ inputs.pnpm_version }}"
+        
+        if [ -z "$VERSION" ] && [ -f "package.json" ]; then
+          if grep -q '"packageManager"[[:space:]]*:[[:space:]]*"pnpm' package.json; then
+            echo "Detected pnpm in packageManager, letting pnpm/action-setup handle it."
+            VERSION=""
+          else
+            VERSION="latest"
+          fi
+        elif [ -z "$VERSION" ]; then
+          VERSION="latest"
+        fi
+        
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
     - uses: pnpm/action-setup@v4
       with:
-        version: ${{ inputs.pnpm_version }}
+        version: ${{ steps.detect-pnpm-version.outputs.version }}
     - uses: actions/setup-node@v4
       with:
         node-version: ${{ inputs.node_version }}
