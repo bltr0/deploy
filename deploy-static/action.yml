@@ -50,9 +50,13 @@ runs:
         fi
         
         echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "use_package_manager=$([ -z "$VERSION" ] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
     - uses: pnpm/action-setup@v4
+      if: steps.detect-pnpm-version.outputs.use_package_manager != 'true'
       with:
         version: ${{ steps.detect-pnpm-version.outputs.version }}
+    - uses: pnpm/action-setup@v4
+      if: steps.detect-pnpm-version.outputs.use_package_manager == 'true'
     - uses: actions/setup-node@v4
       with:
         node-version: ${{ inputs.node_version }}
