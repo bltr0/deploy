@@ -1,18 +1,30 @@
 name: Deploy Docker Compose App
 description: Build and restart services using docker compose on VPS
 inputs:
-  host: { required: true, description: "HOST address" }
-  username: { required: true, description: "HOST USER" }
-  key: { required: true, description: "HOST USER private key" }
-  project_dir: { required: true, description: "Project directory on HOST relative to USER home directory" }
+  host:
+    required: true
+    description: "SSH host address"
+  username:
+    required: true
+    description: "SSH username"
+  key:
+    required: true
+    description: "SSH private key"
+  project_dir:
+    required: true
+    description: "Absolute path to project directory on host"
   compose_file:
     required: false
     default: "docker-compose.yml"
-    description: "Path to the compose file if different"
+    description: "Path to the compose file relative to project_dir"
   migration_service:
     required: false
     default: ""
     description: "Service name to run migrations on (leave empty to skip)"
+  migration_command:
+    required: false
+    default: ""
+    description: "Full migration command to run (e.g. 'npx prisma migrate deploy')"
 runs:
   using: composite
   steps:
@@ -23,27 +35,23 @@ runs:
         key: ${{ inputs.key }}
         script: |
           set -e
-          target_dir="${{ inputs.project_dir }}"
-          
-          # 1. Navigate to project
-          cd "$target_dir"
-          
-          # 2. Update Code
+          export DOCKER_HOST=unix:///run/user/1000/docker.sock
+          export XDG_RUNTIME_DIR=/run/user/1000
+
+          cd "${{ inputs.project_dir }}"
+
           git fetch origin
           git reset --hard origin/main
-          
-          # 3. Docker Compose Deploy
+
           docker compose -f ${{ inputs.compose_file }} pull
           docker compose -f ${{ inputs.compose_file }} up -d --build --remove-orphans
-          
-          # 4. Run Migrations (wait for containers to be healthy)
-          if [ -n "${{ inputs.migration_service }}" ]; then
-            echo "Waiting for services to be ready..."
-            sleep 5
-            docker compose -f ${{ inputs.compose_file }} exec -T ${{ inputs.migration_service }} npx prisma migrate deploy
+
+          if [ -n "${{ inputs.migration_service }}" ] && [ -n "${{ inputs.migration_command }}" ]; then
+            echo "Waiting for ${{ inputs.migration_service }} to be healthy..."
+            docker compose -f ${{ inputs.compose_file }} wait ${{ inputs.migration_service }}
+            docker compose -f ${{ inputs.compose_file }} exec -T ${{ inputs.migration_service }} ${{ inputs.migration_command }}
           else
-            echo "Skipping migrations (no migration_service specified)"
+            echo "Skipping migrations"
           fi
-          
-          # 5. Prune
+
           docker image prune -af

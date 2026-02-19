@@ -1,5 +1,5 @@
 name: Deploy Static Site
-description: Build and deploy a static site via SCP + Nginx reload
+description: Build and deploy a static site via rsync + Caddy
 inputs:
   host:
     required: true
@@ -25,6 +25,10 @@ inputs:
   output_dir:
     required: false
     default: 'out'
+  reload_caddy:
+    required: false
+    default: 'false'
+    description: Reload Caddy after deploy (requires NOPASSWD sudoers entry)
 runs:
   using: composite
   steps:
@@ -53,23 +57,31 @@ runs:
       with:
         node-version: ${{ inputs.node_version }}
         cache: pnpm
-    - run: pnpm install --frozen-lockfile
+
+    - name: Install dependencies
+      run: pnpm install --frozen-lockfile
       shell: bash
-    - run: ${{ inputs.build_command }}
+
+    - name: Build
+      run: ${{ inputs.build_command }}
       shell: bash
-    - uses: appleboy/scp-action@v0.1.7
+
+    - name: Deploy via rsync
+      uses: burnett01/rsync-deployments@7.0.1
       with:
-        host: ${{ inputs.host }}
-        username: ${{ inputs.username }}
-        key: ${{ inputs.key }}
-        source: "${{ inputs.output_dir }}/*"
-        target: ${{ inputs.target_dir }}
-        rm: true
-    - uses: appleboy/ssh-action@v1.0.3
+        switches: -avzr --delete --checksum
+        path: ${{ inputs.output_dir }}/
+        remote_path: ${{ inputs.target_dir }}
+        remote_host: ${{ inputs.host }}
+        remote_user: ${{ inputs.username }}
+        remote_key: ${{ inputs.key }}
+
+    - name: Reload Caddy
+      if: ${{ inputs.reload_caddy == 'true' }}
+      uses: appleboy/ssh-action@v1.0.3
       with:
         host: ${{ inputs.host }}
         username: ${{ inputs.username }}
         key: ${{ inputs.key }}
         script: |
-          sudo nginx -t
-          sudo systemctl reload nginx
+          sudo systemctl reload caddy

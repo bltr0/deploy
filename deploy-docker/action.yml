@@ -1,20 +1,61 @@
 name: Deploy Docker App
-description: Build image on server, migrate (optional), and restart container
+description: Build image on GH Actions, transfer to VPS via SSH, and restart container
 inputs:
-  host: { required: true }
-  username: { required: true }
-  key: { required: true }
-  project_dir: { required: true }
-  image_name: { required: true }
-  container_name: { required: true }
-  docker_run_flags:
+  host:
     required: true
-    description: Flags passed to docker run (ports, volumes, env-file)
+    description: "SSH host address"
+  username:
+    required: true
+    description: "SSH username"
+  key:
+    required: true
+    description: "SSH private key"
+  image_name:
+    required: true
+    description: "Docker image name"
+  container_name:
+    required: true
+    description: "Docker container name to run"
+  project_dir:
+    required: true
+    description: "Absolute path to project directory on host (must contain Dockerfile)"
+  docker_run_flags:
+    required: false
+    default: ""
+    description: "Extra flags passed to docker run (e.g. '-p 127.0.0.1:3000:3000 --env-file .env')"
   migration_command:
     required: false
+    default: ""
+    description: "Full migration command to run before starting container (e.g. 'npx prisma migrate deploy')"
 runs:
   using: composite
   steps:
+    - uses: actions/checkout@v4
+    - uses: docker/setup-buildx-action@v3
+
+    - name: Build image
+      shell: bash
+      run: |
+        docker build -t ${{ inputs.image_name }}:latest .
+
+    - name: Transfer image to VPS
+      shell: bash
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ inputs.key }}" > ~/.ssh/deploy_key
+        chmod 600 ~/.ssh/deploy_key
+
+        docker save ${{ inputs.image_name }}:latest \
+          | gzip \
+          | ssh \
+              -i ~/.ssh/deploy_key \
+              -o StrictHostKeyChecking=no \
+              -o Compression=no \
+              ${{ inputs.username }}@${{ inputs.host }} \
+              "export DOCKER_HOST=unix:///run/user/1000/docker.sock && \
+               export XDG_RUNTIME_DIR=/run/user/1000 && \
+               gunzip | docker load"
+
     - uses: appleboy/ssh-action@v1.0.3
       with:
         host: ${{ inputs.host }}
@@ -22,18 +63,24 @@ runs:
         key: ${{ inputs.key }}
         script: |
           set -e
-          cd ${{ inputs.project_dir }}
-          git fetch origin
-          git reset --hard origin/main
-          docker build -t "${{ inputs.image_name }}:latest" .
+          export DOCKER_HOST=unix:///run/user/1000/docker.sock
+          export XDG_RUNTIME_DIR=/run/user/1000
+
           docker stop "${{ inputs.container_name }}" || true
-          docker rm "${{ inputs.container_name }}" || true
+          docker rm   "${{ inputs.container_name }}" || true
+
           if [ -n "${{ inputs.migration_command }}" ]; then
-            docker run --rm ${{ inputs.docker_run_flags }} "${{ inputs.image_name }}:latest" ${{ inputs.migration_command }}
+            echo "Running migrations..."
+            docker run --rm \
+              ${{ inputs.docker_run_flags }} \
+              ${{ inputs.image_name }}:latest \
+              ${{ inputs.migration_command }}
           fi
+
           docker run -d \
             --name "${{ inputs.container_name }}" \
             --restart=unless-stopped \
             ${{ inputs.docker_run_flags }} \
-            "${{ inputs.image_name }}:latest"
-          docker image prune -af
+            ${{ inputs.image_name }}:latest
+
+          docker image prune -f
