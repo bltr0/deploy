@@ -25,6 +25,14 @@ inputs:
   output_dir:
     required: false
     default: 'out'
+  skip_build:
+    required: false
+    default: 'false'
+    description: Skip Node/pnpm install and build; deploy source_dir as-is (for plain static sites)
+  source_dir:
+    required: false
+    default: '.'
+    description: Directory to deploy when skip_build is true (default repo root)
   reload_caddy:
     required: false
     default: 'false'
@@ -34,6 +42,7 @@ runs:
   steps:
     - uses: actions/checkout@v4
     - id: detect-pnpm-version
+      if: inputs.skip_build != 'true'
       shell: bash
       run: |
         VERSION="${{ inputs.pnpm_version }}"
@@ -52,29 +61,32 @@ runs:
         echo "version=$VERSION" >> $GITHUB_OUTPUT
         echo "use_package_manager=$([ -z "$VERSION" ] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
     - uses: pnpm/action-setup@v4
-      if: steps.detect-pnpm-version.outputs.use_package_manager != 'true'
+      if: inputs.skip_build != 'true' && steps.detect-pnpm-version.outputs.use_package_manager != 'true'
       with:
         version: ${{ steps.detect-pnpm-version.outputs.version }}
     - uses: pnpm/action-setup@v4
-      if: steps.detect-pnpm-version.outputs.use_package_manager == 'true'
+      if: inputs.skip_build != 'true' && steps.detect-pnpm-version.outputs.use_package_manager == 'true'
     - uses: actions/setup-node@v4
+      if: inputs.skip_build != 'true'
       with:
         node-version: ${{ inputs.node_version }}
         cache: pnpm
 
     - name: Install dependencies
+      if: inputs.skip_build != 'true'
       run: pnpm install --frozen-lockfile
       shell: bash
 
     - name: Build
+      if: inputs.skip_build != 'true'
       run: ${{ inputs.build_command }}
       shell: bash
 
     - name: Deploy via rsync
       uses: burnett01/rsync-deployments@7.0.1
       with:
-        switches: -avzr --delete --checksum
-        path: ${{ inputs.output_dir }}/
+        switches: ${{ inputs.skip_build == 'true' && '--exclude=.git --exclude=.github ' || '' }}-avzr --delete --checksum
+        path: ${{ inputs.skip_build == 'true' && inputs.source_dir || inputs.output_dir }}/
         remote_path: ${{ inputs.target_dir }}
         remote_host: ${{ inputs.host }}
         remote_user: ${{ inputs.username }}
