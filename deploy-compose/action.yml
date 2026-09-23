@@ -1,5 +1,5 @@
 name: Deploy Docker Compose App
-description: Build and restart services using docker compose on VPS
+description: Rsync the calling repo to the host, then build and restart services with docker compose
 inputs:
   host:
     required: true
@@ -25,26 +25,45 @@ inputs:
     required: false
     default: ""
     description: "Full migration command to run (e.g. 'npx prisma migrate deploy')"
+  command_timeout:
+    required: false
+    default: "30m"
+    description: "SSH command timeout (e.g. 10m, 30m)"
 runs:
   using: composite
   steps:
+    - uses: actions/checkout@v4
+
+    - name: Deploy via rsync
+      uses: burnett01/rsync-deployments@7.0.1
+      with:
+        switches: -avzr --delete --checksum --exclude=.git --exclude=node_modules --exclude=dist --exclude=.env
+        path: ./
+        remote_path: ${{ inputs.project_dir }}
+        remote_host: ${{ inputs.host }}
+        remote_user: ${{ inputs.username }}
+        remote_key: ${{ inputs.key }}
+
     - uses: appleboy/ssh-action@v1.0.3
       with:
         host: ${{ inputs.host }}
         username: ${{ inputs.username }}
         key: ${{ inputs.key }}
+        command_timeout: ${{ inputs.command_timeout }}
         script: |
           set -e
           export DOCKER_HOST=unix:///run/user/1000/docker.sock
           export XDG_RUNTIME_DIR=/run/user/1000
 
           cd "${{ inputs.project_dir }}"
+          rm -rf .git
 
-          git fetch origin
-          git reset --hard origin/main
+          if ! docker compose -f ${{ inputs.compose_file }} build; then
+            echo "Build failed; running containers were left unchanged"
+            exit 1
+          fi
 
-          docker compose -f ${{ inputs.compose_file }} pull
-          docker compose -f ${{ inputs.compose_file }} up -d --build --remove-orphans
+          docker compose -f ${{ inputs.compose_file }} up -d --remove-orphans
 
           if [ -n "${{ inputs.migration_service }}" ] && [ -n "${{ inputs.migration_command }}" ]; then
             echo "Waiting for ${{ inputs.migration_service }} to be healthy..."
