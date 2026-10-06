@@ -27,6 +27,14 @@ inputs:
     required: false
     default: ""
     description: "Full migration command to run before starting container (e.g. 'npx prisma migrate deploy')"
+  docker_host:
+    required: false
+    default: "unix:///run/user/1000/docker.sock"
+    description: "DOCKER_HOST on the VPS (default: rootless Docker for uid 1000)"
+  startup_check_seconds:
+    required: false
+    default: "10"
+    description: "Seconds to wait before checking the new container is still running (rollback otherwise)"
 runs:
   using: composite
   steps:
@@ -35,52 +43,84 @@ runs:
 
     - name: Build image
       shell: bash
+      env:
+        IMAGE: ${{ inputs.image_name }}
       run: |
-        docker build -t ${{ inputs.image_name }}:latest .
+        docker build --pull -t "$IMAGE:latest" .
 
     - name: Transfer image to VPS
       shell: bash
+      env:
+        SSH_KEY: ${{ inputs.key }}
+        SSH_USER: ${{ inputs.username }}
+        SSH_HOST: ${{ inputs.host }}
+        IMAGE: ${{ inputs.image_name }}
+        REMOTE_DOCKER_HOST: ${{ inputs.docker_host }}
       run: |
-        mkdir -p ~/.ssh
-        echo "${{ inputs.key }}" > ~/.ssh/deploy_key
-        chmod 600 ~/.ssh/deploy_key
+        KEY_FILE="$RUNNER_TEMP/deploy_key"
+        trap 'rm -f "$KEY_FILE"' EXIT
+        umask 077
+        printf '%s\n' "$SSH_KEY" > "$KEY_FILE"
 
-        docker save ${{ inputs.image_name }}:latest \
+        RUNTIME_DIR=$(dirname "${REMOTE_DOCKER_HOST#unix://}")
+
+        # Keep the currently running image as :previous so we can roll back, then load the new one
+        docker save "$IMAGE:latest" \
           | gzip \
           | ssh \
-              -i ~/.ssh/deploy_key \
-              -o StrictHostKeyChecking=no \
+              -i "$KEY_FILE" \
+              -o StrictHostKeyChecking=accept-new \
+              -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \
               -o Compression=no \
-              ${{ inputs.username }}@${{ inputs.host }} \
-              "export DOCKER_HOST=unix:///run/user/1000/docker.sock && \
-               export XDG_RUNTIME_DIR=/run/user/1000 && \
+              "$SSH_USER@$SSH_HOST" \
+              "export DOCKER_HOST='$REMOTE_DOCKER_HOST' XDG_RUNTIME_DIR='$RUNTIME_DIR' && \
+               (docker image inspect '$IMAGE:latest' >/dev/null 2>&1 && docker tag '$IMAGE:latest' '$IMAGE:previous' || true) && \
                gunzip | docker load"
 
     - uses: appleboy/ssh-action@v1.2.5
+      env:
+        IMAGE: ${{ inputs.image_name }}
+        CONTAINER: ${{ inputs.container_name }}
+        RUN_FLAGS: ${{ inputs.docker_run_flags }}
+        MIGRATION_COMMAND: ${{ inputs.migration_command }}
+        REMOTE_DOCKER_HOST: ${{ inputs.docker_host }}
+        STARTUP_CHECK: ${{ inputs.startup_check_seconds }}
       with:
         host: ${{ inputs.host }}
         username: ${{ inputs.username }}
         key: ${{ inputs.key }}
+        envs: IMAGE,CONTAINER,RUN_FLAGS,MIGRATION_COMMAND,REMOTE_DOCKER_HOST,STARTUP_CHECK
         script: |
-          set -e
-          export DOCKER_HOST=unix:///run/user/1000/docker.sock
-          export XDG_RUNTIME_DIR=/run/user/1000
+          set -eu
+          export DOCKER_HOST="$REMOTE_DOCKER_HOST"
+          export XDG_RUNTIME_DIR="$(dirname "${REMOTE_DOCKER_HOST#unix://}")"
 
-          docker stop "${{ inputs.container_name }}" || true
-          docker rm   "${{ inputs.container_name }}" || true
+          # RUN_FLAGS / MIGRATION_COMMAND are intentionally word-split into argv
 
-          if [ -n "${{ inputs.migration_command }}" ]; then
+          # Migrate while the old container still serves traffic: a failed migration aborts the deploy
+          if [ -n "$MIGRATION_COMMAND" ]; then
             echo "Running migrations..."
-            docker run --rm \
-              ${{ inputs.docker_run_flags }} \
-              ${{ inputs.image_name }}:latest \
-              ${{ inputs.migration_command }}
+            docker run --rm $RUN_FLAGS "$IMAGE:latest" $MIGRATION_COMMAND
           fi
 
-          docker run -d \
-            --name "${{ inputs.container_name }}" \
-            --restart=unless-stopped \
-            ${{ inputs.docker_run_flags }} \
-            ${{ inputs.image_name }}:latest
+          start() {
+            docker stop "$CONTAINER" >/dev/null 2>&1 || true
+            docker rm   "$CONTAINER" >/dev/null 2>&1 || true
+            docker run -d --name "$CONTAINER" --restart=unless-stopped $RUN_FLAGS "$1"
+          }
 
-          docker image prune -f
+          start "$IMAGE:latest"
+
+          sleep "$STARTUP_CHECK"
+          if [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null)" != "true" ] \
+             || [ "$(docker inspect -f '{{.RestartCount}}' "$CONTAINER")" -gt 0 ]; then
+            echo "New container failed to stay up:"
+            docker logs --tail 50 "$CONTAINER" || true
+            if docker image inspect "$IMAGE:previous" >/dev/null 2>&1; then
+              echo "Rolling back to $IMAGE:previous"
+              start "$IMAGE:previous"
+            fi
+            exit 1
+          fi
+
+          docker image prune -f || echo "Image prune failed (non-fatal)"

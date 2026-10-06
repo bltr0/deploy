@@ -34,10 +34,27 @@ runs:
   steps:
     - uses: actions/checkout@v7.0.1
 
+    - name: Validate inputs
+      shell: bash
+      env:
+        PROJECT_DIR: ${{ inputs.project_dir }}
+      run: |
+        # rsync runs with --delete: refuse anything that could wipe the wrong tree
+        case "$PROJECT_DIR" in
+          /*) ;;
+          *) echo "project_dir must be an absolute path"; exit 1 ;;
+        esac
+        if [ "$PROJECT_DIR" = "/" ] || [ "$(echo "$PROJECT_DIR" | tr -s / | sed 's#/$##' | awk -F/ '{print NF-1}')" -lt 2 ]; then
+          echo "project_dir '$PROJECT_DIR' is too shallow; refusing to rsync --delete into it"
+          exit 1
+        fi
+
     - name: Deploy via rsync
       uses: burnett01/rsync-deployments@8.0.5
       with:
-        switches: -avzr --delete --checksum --exclude=.git --exclude=node_modules --exclude=dist --exclude=.env
+        # -rlz instead of -a: don't try to preserve times/perms/owner, which fails (code 23)
+        # on files the deploy user doesn't own. --checksum makes mtimes unnecessary anyway.
+        switches: -rlvz --delete --delete-after --checksum --omit-dir-times --exclude=.git --exclude=node_modules --exclude=dist --exclude=.env
         path: ./
         remote_path: ${{ inputs.project_dir }}
         remote_host: ${{ inputs.host }}
@@ -45,30 +62,49 @@ runs:
         remote_key: ${{ inputs.key }}
 
     - uses: appleboy/ssh-action@v1.2.5
+      env:
+        PROJECT_DIR: ${{ inputs.project_dir }}
+        COMPOSE_FILE_PATH: ${{ inputs.compose_file }}
+        MIGRATION_SERVICE: ${{ inputs.migration_service }}
+        MIGRATION_COMMAND: ${{ inputs.migration_command }}
       with:
         host: ${{ inputs.host }}
         username: ${{ inputs.username }}
         key: ${{ inputs.key }}
         command_timeout: ${{ inputs.command_timeout }}
+        envs: PROJECT_DIR,COMPOSE_FILE_PATH,MIGRATION_SERVICE,MIGRATION_COMMAND
         script: |
-          set -e
+          set -eu
 
-          cd "${{ inputs.project_dir }}"
+          cd "$PROJECT_DIR"
           rm -rf .git
 
-          if ! docker compose -f ${{ inputs.compose_file }} build; then
+          if ! docker compose -f "$COMPOSE_FILE_PATH" build; then
             echo "Build failed; running containers were left unchanged"
             exit 1
           fi
 
-          docker compose -f ${{ inputs.compose_file }} up -d --remove-orphans
+          docker compose -f "$COMPOSE_FILE_PATH" up -d --remove-orphans
 
-          if [ -n "${{ inputs.migration_service }}" ] && [ -n "${{ inputs.migration_command }}" ]; then
-            echo "Waiting for ${{ inputs.migration_service }} to be healthy..."
-            docker compose -f ${{ inputs.compose_file }} wait ${{ inputs.migration_service }}
-            docker compose -f ${{ inputs.compose_file }} exec -T ${{ inputs.migration_service }} ${{ inputs.migration_command }}
+          if [ -n "$MIGRATION_SERVICE" ] && [ -n "$MIGRATION_COMMAND" ]; then
+            echo "Waiting for $MIGRATION_SERVICE to be healthy..."
+            # `docker compose wait` blocks until the container EXITS, so poll health instead
+            CID=$(docker compose -f "$COMPOSE_FILE_PATH" ps -q "$MIGRATION_SERVICE")
+            [ -n "$CID" ] || { echo "Service $MIGRATION_SERVICE has no container"; exit 1; }
+            for i in $(seq 1 60); do
+              STATUS=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$CID")
+              case "$STATUS" in
+                healthy|running) break ;;
+                unhealthy|exited|dead) echo "$MIGRATION_SERVICE is $STATUS"; docker logs --tail 50 "$CID"; exit 1 ;;
+              esac
+              [ "$i" -eq 60 ] && { echo "Timed out waiting for $MIGRATION_SERVICE (status: $STATUS)"; exit 1; }
+              sleep 2
+            done
+            # MIGRATION_COMMAND is intentionally word-split into argv
+            docker compose -f "$COMPOSE_FILE_PATH" exec -T "$MIGRATION_SERVICE" $MIGRATION_COMMAND
           else
             echo "Skipping migrations"
           fi
 
-          docker image prune -af
+          docker compose -f "$COMPOSE_FILE_PATH" ps
+          docker image prune -af || echo "Image prune failed (non-fatal)"

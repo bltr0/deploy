@@ -41,11 +41,27 @@ runs:
   using: composite
   steps:
     - uses: actions/checkout@v7.0.1
+
+    - name: Validate inputs
+      shell: bash
+      env:
+        TARGET_DIR: ${{ inputs.target_dir }}
+      run: |
+        # rsync runs with --delete: refuse anything that could wipe the wrong tree
+        case "$TARGET_DIR" in
+          /*) ;;
+          *) echo "target_dir must be an absolute path"; exit 1 ;;
+        esac
+        if [ "$(echo "$TARGET_DIR" | tr -s / | sed 's#/$##' | awk -F/ '{print NF-1}')" -lt 2 ]; then
+          echo "target_dir '$TARGET_DIR' is too shallow; refusing to rsync --delete into it"
+          exit 1
+        fi
     - id: detect-pnpm-version
       if: inputs.skip_build != 'true'
       shell: bash
+      env:
+        VERSION: ${{ inputs.pnpm_version }}
       run: |
-        VERSION="${{ inputs.pnpm_version }}"
 
         if [ -z "$VERSION" ] && [ -f "package.json" ]; then
           if grep -q '"packageManager"[[:space:]]*:[[:space:]]*"pnpm' package.json; then
@@ -79,13 +95,29 @@ runs:
 
     - name: Build
       if: inputs.skip_build != 'true'
-      run: ${{ inputs.build_command }}
+      run: eval "$BUILD_COMMAND"
       shell: bash
+      env:
+        BUILD_COMMAND: ${{ inputs.build_command }}
+
+    - name: Check build output
+      if: inputs.skip_build != 'true'
+      shell: bash
+      env:
+        OUTPUT_DIR: ${{ inputs.output_dir }}
+      run: |
+        # Never rsync --delete an empty/missing dir over a live site
+        if [ ! -d "$OUTPUT_DIR" ] || [ -z "$(ls -A "$OUTPUT_DIR")" ]; then
+          echo "Build output '$OUTPUT_DIR' is missing or empty"
+          exit 1
+        fi
 
     - name: Deploy via rsync
       uses: burnett01/rsync-deployments@8.0.5
       with:
-        switches: ${{ inputs.skip_build == 'true' && '--exclude=.git --exclude=.github ' || '' }}-avzr --delete --checksum
+        # -rlz instead of -a: don't preserve times/perms/owner (fails with code 23 on files the
+        # deploy user doesn't own). --delay-updates swaps files in at the end to shrink the mixed-version window.
+        switches: ${{ inputs.skip_build == 'true' && '--exclude=.git --exclude=.github ' || '' }}-rlvz --checksum --omit-dir-times --delete --delete-after --delay-updates
         path: ${{ inputs.skip_build == 'true' && inputs.source_dir || inputs.output_dir }}/
         remote_path: ${{ inputs.target_dir }}
         remote_host: ${{ inputs.host }}
