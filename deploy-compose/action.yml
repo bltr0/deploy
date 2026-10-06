@@ -32,10 +32,10 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7.0.1
 
     - name: Deploy via rsync
-      uses: burnett01/rsync-deployments@7.0.1
+      uses: burnett01/rsync-deployments@8.0.5
       with:
         switches: -avzr --delete --checksum --exclude=.git --exclude=node_modules --exclude=dist --exclude=.env
         path: ./
@@ -44,7 +44,7 @@ runs:
         remote_user: ${{ inputs.username }}
         remote_key: ${{ inputs.key }}
 
-    - uses: appleboy/ssh-action@v1.0.3
+    - uses: appleboy/ssh-action@v1.2.5
       with:
         host: ${{ inputs.host }}
         username: ${{ inputs.username }}

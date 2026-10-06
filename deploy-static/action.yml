@@ -40,13 +40,13 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7.0.1
     - id: detect-pnpm-version
       if: inputs.skip_build != 'true'
       shell: bash
       run: |
         VERSION="${{ inputs.pnpm_version }}"
-        
+
         if [ -z "$VERSION" ] && [ -f "package.json" ]; then
           if grep -q '"packageManager"[[:space:]]*:[[:space:]]*"pnpm' package.json; then
             echo "Detected pnpm in packageManager, letting pnpm/action-setup handle it."
@@ -57,16 +57,16 @@ runs:
         elif [ -z "$VERSION" ]; then
           VERSION="latest"
         fi
-        
+
         echo "version=$VERSION" >> $GITHUB_OUTPUT
         echo "use_package_manager=$([ -z "$VERSION" ] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
-    - uses: pnpm/action-setup@v4
+    - uses: pnpm/action-setup@v6.1.0
       if: inputs.skip_build != 'true' && steps.detect-pnpm-version.outputs.use_package_manager != 'true'
       with:
         version: ${{ steps.detect-pnpm-version.outputs.version }}
-    - uses: pnpm/action-setup@v4
+    - uses: pnpm/action-setup@v6.1.0
       if: inputs.skip_build != 'true' && steps.detect-pnpm-version.outputs.use_package_manager == 'true'
-    - uses: actions/setup-node@v4
+    - uses: actions/setup-node@v7.0.0
       if: inputs.skip_build != 'true'
       with:
         node-version: ${{ inputs.node_version }}
@@ -83,7 +83,7 @@ runs:
       shell: bash
 
     - name: Deploy via rsync
-      uses: burnett01/rsync-deployments@7.0.1
+      uses: burnett01/rsync-deployments@8.0.5
       with:
         switches: ${{ inputs.skip_build == 'true' && '--exclude=.git --exclude=.github ' || '' }}-avzr --delete --checksum
         path: ${{ inputs.skip_build == 'true' && inputs.source_dir || inputs.output_dir }}/
@@ -94,7 +94,7 @@ runs:
 
     - name: Reload Caddy
       if: ${{ inputs.reload_caddy == 'true' }}
-      uses: appleboy/ssh-action@v1.0.3
+      uses: appleboy/ssh-action@v1.2.5
       with:
         host: ${{ inputs.host }}
         username: ${{ inputs.username }}
