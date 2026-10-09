@@ -50,7 +50,7 @@ runs:
         fi
 
     - name: Deploy via rsync
-      uses: burnett01/rsync-deployments@8.0.5
+      uses: burnett01/rsync-deployments@9.0.1
       with:
         # -rlz instead of -a: don't try to preserve times/perms/owner, which fails (code 23)
         # on files the deploy user doesn't own. --checksum makes mtimes unnecessary anyway.
