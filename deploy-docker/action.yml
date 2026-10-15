@@ -56,7 +56,6 @@ runs:
       shell: bash
       env:
         SSH_KEY: ${{ inputs.key }}
-        LIMIT: ${{ inputs.attempt_timeout }}
         SSH_USER: ${{ inputs.username }}
         SSH_HOST: ${{ inputs.host }}
         IMAGE: ${{ inputs.image_name }}
@@ -90,6 +89,7 @@ runs:
         SSH_HOST: ${{ inputs.host }}
         SSH_USER: ${{ inputs.username }}
         SSH_KEY: ${{ inputs.key }}
+        LIMIT: ${{ inputs.attempt_timeout }}
         SSH_ENVS: IMAGE CONTAINER RUN_FLAGS MIGRATION_COMMAND REMOTE_DOCKER_HOST STARTUP_CHECK
         IMAGE: ${{ inputs.image_name }}
         CONTAINER: ${{ inputs.container_name }}
