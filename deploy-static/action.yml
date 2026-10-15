@@ -126,10 +126,34 @@ runs:
 
     - name: Reload Caddy
       if: ${{ inputs.reload_caddy == 'true' }}
-      uses: appleboy/ssh-action@v1.2.5
-      with:
-        host: ${{ inputs.host }}
-        username: ${{ inputs.username }}
-        key: ${{ inputs.key }}
-        script: |
-          sudo systemctl reload caddy
+      shell: bash
+      env:
+        SSH_HOST: ${{ inputs.host }}
+        SSH_USER: ${{ inputs.username }}
+        SSH_KEY: ${{ inputs.key }}
+        SSH_ENVS: ""
+        LIMIT: 2m
+      run: |
+        echo 'sudo systemctl reload caddy' > "$RUNNER_TEMP/remote.sh"
+        # Plain SSH, a time limit per attempt, 3 attempts. Only a timeout or a lost connection
+        # is retried: a failure of the script itself stops at once. The script must be safe to run twice.
+        umask 077
+        KEY_FILE="$RUNNER_TEMP/deploy_key"; PAYLOAD="$RUNNER_TEMP/remote_payload.sh"
+        trap 'rm -f "$KEY_FILE" "$PAYLOAD"' EXIT
+        printf '%s\n' "$SSH_KEY" > "$KEY_FILE"
+        { echo 'set -eu'; for v in $SSH_ENVS; do printf 'export %s=%q\n' "$v" "${!v-}"; done; cat "$RUNNER_TEMP/remote.sh"; } > "$PAYLOAD"
+        for i in 1 2 3; do
+          echo "::group::Attempt $i/3 (limit $LIMIT)"
+          rc=0
+          timeout --kill-after=10 "$LIMIT" ssh -i "$KEY_FILE" -o BatchMode=yes \
+            -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \
+            -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$SSH_USER@$SSH_HOST" 'bash -s' < "$PAYLOAD" || rc=$?
+          echo "::endgroup::"
+          case $rc in
+            0) exit 0 ;;
+            124|137|255) echo "::warning::Attempt $i/3 timed out or lost the connection (exit $rc)" ;;
+            *) echo "::error::Remote script failed (exit $rc)"; exit "$rc" ;;
+          esac
+        done
+        echo "::error::No attempt finished within $LIMIT (3 tries): giving up"; exit 1
